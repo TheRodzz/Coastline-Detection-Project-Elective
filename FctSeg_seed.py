@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 
 from scipy import linalg as LAsci
 from skimage import io
+from tifffile import imread
+from sklearn.cluster import KMeans
 
 
 def SHcomp(Ig, ws, BinN=11):
@@ -85,7 +87,7 @@ def Fseg(Ig, ws, seeds):
 
     N1, N2, bn = Ig.shape
 
-    ws = ws / 2
+    ws = int(ws / 2)
     sh_mtx = SHcomp(Ig, ws)
 
     Z = []
@@ -96,39 +98,61 @@ def Fseg(Ig, ws, seeds):
 
     Y = sh_mtx.reshape((N1 * N2, -1))
 
-    ZZTinv = LAsci.inv(np.dot(Z.T, Z))
+    ZZT = np.dot(Z.T, Z)
+    ZZT += np.eye(ZZT.shape[0]) * 1e-6  # Add a small constant to the diagonal
+    ZZTinv = LAsci.inv(ZZT)
     Beta = np.dot(np.dot(ZZTinv, Z.T), Y.T)
-
+    ZZTinv= None
     seg_label = np.argmax(Beta, axis=0)
-
+    Beta = None
     return seg_label.reshape((N1, N2))
 
-
 if __name__ == '__main__':
-    time0 = time.time()
-    # an example of using Fseg
-    img = io.imread('M1.pgm')
+    i=1
+    while(True):
+        time0 = time.time()
+        # an example of using Fseg
+        sar_img = imread('./croppedimages/cropped_image2.tif')
+        height, width = sar_img.shape
 
-    # define filter bank and apply to image. for color images, convert rgb to grey scale and then apply filter bank
-    filter_list = [('log', .5, [3, 3]), ('log', 1.2, [7, 7])]
+        sar_img = sar_img.astype(np.float32)
+        sar_img = (sar_img - np.min(sar_img)) / (np.max(sar_img) - np.min(sar_img))
+        Ig = np.expand_dims(sar_img, axis=2)
 
-    filter_out = image_filtering(img, filter_list=filter_list)
+        # Compute seeds automatically using K-means
+        n_clusters = 2  # number of seeds
+        kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0).fit(sar_img.reshape(-1, 1))
+        centers = kmeans.cluster_centers_
 
-    # include original image as one band
-    Ig = np.concatenate((np.float32(img.reshape((img.shape[0], img.shape[1], 1))), filter_out), axis=2)
+        # Convert cluster centers to seeds
+        seeds = []
+        for center in centers:
+            coord = np.argmin(np.abs(sar_img - center))
+            seeds.append([coord // width, coord % width])
 
-    seeds = [[60, 238], [160, 160], [238, 60]]  # provide seeds
+        # run segmentation. try different window size
+        seg_out = Fseg(Ig, ws=i, seeds=seeds)
 
-    # run segmentation. try different window size
-    seg_out = Fseg(Ig, ws=19, seeds=seeds)
+        print ('FSEG runs in %0.2f seconds. ' % (time.time() - time0))
 
-    print 'FSEG runs in %0.2f seconds. ' % (time.time() - time0)
 
-    # show results
-    fig, ax = plt.subplots(ncols=2, sharex=True, sharey=True, figsize=(10, 5))
-    ax[0].imshow(img, cmap='gray')
-    seeds = np.array(seeds)
-    plt.plot(seeds[:, 1], seeds[:, 0], 'r*')
-    ax[1].imshow(seg_out, cmap='gray')
-    plt.tight_layout()
-    plt.show()
+        # Desired resolution
+        res = 1  # DPI (dots per inch)
+
+        fig, ax = plt.subplots(figsize=(width, height), dpi=res)
+
+        # show results
+        # fig, ax = plt.subplots(ncols=1, sharex=True, sharey=True, figsize=(10, 5))
+        # ax[0].imshow(img, cmap='gray')
+        seeds = np.array(seeds)
+        plt.plot(seeds[:, 1], seeds[:, 0], 'r*')
+        ax.imshow(seg_out, cmap='gray')
+        seg_out=None
+        ax.axis('off')  # Turn off axis labels and ticks for a clean image
+
+        plt.tight_layout()
+        # plt.show()
+        plt.savefig(f"./croppedimages/results/cropped_image2/ws={i}")
+        plt.close()
+        print(f"Completed iteration {i}")
+        i+=1
